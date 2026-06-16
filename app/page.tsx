@@ -2,21 +2,8 @@
 
 import { useState, useMemo } from "react";
 import Image from "next/image";
-
-// Dummy Food Data with High-Quality Unsplash Images
-interface FoodItem {
-  id: string;
-  name: string;
-  chineseName: string;
-  description: string;
-  price: number;
-  image: string;
-  category: "Dim Sum" | "Szechuan" | "Noodles" | "Soups" | "Dessert";
-  tags: string[];
-  ratings: number;
-  availability: boolean;
-  spiceLevel: 0 | 1 | 2 | 3;
-}
+import FoodDetailModal from "@/components/FoodDetailModal";
+import { FoodItem, SelectedOptions } from "@/types";
 
 const FOOD_ITEMS: FoodItem[] = [
   {
@@ -126,8 +113,11 @@ const FOOD_ITEMS: FoodItem[] = [
 ];
 
 interface CartItem {
+  cartId: string; // Unique combinations
   foodItem: FoodItem;
   quantity: number;
+  options: SelectedOptions;
+  singlePrice: number; // Base + Add-on pricing
 }
 
 export default function Home() {
@@ -135,6 +125,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
+  const [activeDetailItem, setActiveDetailItem] = useState<FoodItem | null>(null);
 
   const categories = ["All", "Dim Sum", "Szechuan", "Noodles", "Soups", "Dessert"];
 
@@ -151,26 +142,68 @@ export default function Home() {
     });
   }, [selectedCategory, searchQuery]);
 
-  // Cart Handlers
-  const handleAddToCart = (item: FoodItem) => {
+  // Quick Add handler (Defaults Mild, No Add-ons)
+  const handleQuickAdd = (item: FoodItem) => {
+    const defaultOptions: SelectedOptions = { spiceLevel: "Mild", addOns: [] };
+    const cartId = `${item.id}-Mild-none`;
+
     setCart((prevCart) => {
-      const existing = prevCart.find((ci) => ci.foodItem.id === item.id);
+      const existing = prevCart.find((ci) => ci.cartId === cartId);
       if (existing) {
         return prevCart.map((ci) =>
-          ci.foodItem.id === item.id
-            ? { ...ci, quantity: ci.quantity + 1 }
-            : ci
+          ci.cartId === cartId ? { ...ci, quantity: ci.quantity + 1 } : ci
         );
       }
-      return [...prevCart, { foodItem: item, quantity: 1 }];
+      return [
+        ...prevCart,
+        {
+          cartId,
+          foodItem: item,
+          quantity: 1,
+          options: defaultOptions,
+          singlePrice: item.price,
+        },
+      ];
     });
   };
 
-  const handleUpdateQuantity = (itemId: string, amount: number) => {
+  // Add from detailed customizer modal
+  const handleAddToCartFromModal = (
+    item: FoodItem,
+    quantity: number,
+    options: SelectedOptions,
+    calculatedTotal: number
+  ) => {
+    // Generate a unique identifier based on customization options
+    const addOnKey = options.addOns.sort().join("-") || "none";
+    const cartId = `${item.id}-${options.spiceLevel}-${addOnKey}`;
+    const singlePrice = calculatedTotal / quantity;
+
+    setCart((prevCart) => {
+      const existing = prevCart.find((ci) => ci.cartId === cartId);
+      if (existing) {
+        return prevCart.map((ci) =>
+          ci.cartId === cartId ? { ...ci, quantity: ci.quantity + quantity } : ci
+        );
+      }
+      return [
+        ...prevCart,
+        {
+          cartId,
+          foodItem: item,
+          quantity,
+          options,
+          singlePrice,
+        },
+      ];
+    });
+  };
+
+  const handleUpdateQuantity = (cartId: string, amount: number) => {
     setCart((prevCart) =>
       prevCart
         .map((ci) => {
-          if (ci.foodItem.id === itemId) {
+          if (ci.cartId === cartId) {
             const nextQty = ci.quantity + amount;
             return nextQty > 0 ? { ...ci, quantity: nextQty } : null;
           }
@@ -180,12 +213,12 @@ export default function Home() {
     );
   };
 
-  const handleRemoveItem = (itemId: string) => {
-    setCart((prevCart) => prevCart.filter((ci) => ci.foodItem.id !== itemId));
+  const handleRemoveItem = (cartId: string) => {
+    setCart((prevCart) => prevCart.filter((ci) => ci.cartId !== cartId));
   };
 
   const cartTotal = useMemo(() => {
-    return cart.reduce((total, ci) => total + ci.foodItem.price * ci.quantity, 0);
+    return cart.reduce((total, ci) => total + ci.singlePrice * ci.quantity, 0);
   }, [cart]);
 
   const totalCartCount = useMemo(() => {
@@ -399,11 +432,12 @@ export default function Home() {
                 return (
                   <div
                     key={item.id}
-                    className={`group relative bg-chinese-white border rounded-3xl overflow-hidden transition-all duration-300 flex flex-col justify-between ${
+                    className={`group relative bg-chinese-white border rounded-3xl overflow-hidden transition-all duration-300 flex flex-col justify-between cursor-pointer ${
                       isItemAvailable
                         ? "border-charcoal-dark/5 hover:border-charcoal-dark/15 hover:shadow-ink hover:-translate-y-1"
                         : "border-charcoal-dark/5 opacity-75"
                     }`}
+                    onClick={() => isItemAvailable && setActiveDetailItem(item)}
                   >
                     
                     {/* Item Image with hover zoom */}
@@ -486,10 +520,13 @@ export default function Home() {
                           ¥{item.price.toFixed(2)}
                         </span>
 
-                        {/* Add to Cart Floating plus button */}
+                        {/* Add to Cart Floating plus button (stops propagation so clicking it directly adds item instead of modal opening) */}
                         {isItemAvailable && (
                           <button
-                            onClick={() => handleAddToCart(item)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleQuickAdd(item);
+                            }}
                             className="w-9 h-9 rounded-full bg-imperial-red text-chinese-white hover:bg-imperial-hover flex items-center justify-center transition-all duration-300 shadow-md hover:shadow-red-glow hover:scale-105 active:scale-95"
                             aria-label={`Add ${item.name} to Cart`}
                           >
@@ -565,60 +602,78 @@ export default function Home() {
                 {cart.length > 0 ? (
                   cart.map((item) => (
                     <div
-                      key={item.foodItem.id}
-                      className="flex items-center gap-4 py-3 border-b border-charcoal-dark/5 group animate-fadeIn"
+                      key={item.cartId}
+                      className="flex flex-col py-3 border-b border-charcoal-dark/5 gap-2 group animate-fadeIn"
                     >
-                      {/* Thumbnail image */}
-                      <div className="w-16 h-16 rounded-xl overflow-hidden relative bg-charcoal-dark/5 flex-shrink-0">
-                        <Image
-                          src={item.foodItem.image}
-                          alt={item.foodItem.name}
-                          fill
-                          sizes="64px"
-                          className="object-cover"
-                        />
-                      </div>
-
-                      {/* Detail metadata */}
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-serif text-sm font-bold text-charcoal-dark truncate">
-                          {item.foodItem.name}
-                        </h4>
-                        <p className="text-[10px] text-imperial-red/80 font-serif font-semibold italic">
-                          {item.foodItem.chineseName}
-                        </p>
-                        <span className="text-xs text-charcoal-medium block mt-0.5">
-                          ¥{item.foodItem.price.toFixed(2)}
-                        </span>
-                      </div>
-
-                      {/* Increment / Decrement Quantity Action */}
-                      <div className="flex flex-col items-end gap-2">
-                        <div className="flex items-center border border-charcoal-dark/10 rounded-full bg-chinese-offwhite/50 p-1">
-                          <button
-                            onClick={() => handleUpdateQuantity(item.foodItem.id, -1)}
-                            className="w-5 h-5 rounded-full hover:bg-charcoal-dark/5 text-charcoal-medium flex items-center justify-center font-bold text-xs"
-                          >
-                            -
-                          </button>
-                          <span className="w-6 text-center text-xs font-bold text-charcoal-dark">
-                            {item.quantity}
-                          </span>
-                          <button
-                            onClick={() => handleUpdateQuantity(item.foodItem.id, 1)}
-                            className="w-5 h-5 rounded-full hover:bg-charcoal-dark/5 text-charcoal-medium flex items-center justify-center font-bold text-xs"
-                          >
-                            +
-                          </button>
+                      <div className="flex items-center gap-4">
+                        {/* Thumbnail image */}
+                        <div className="w-14 h-14 rounded-xl overflow-hidden relative bg-charcoal-dark/5 flex-shrink-0">
+                          <Image
+                            src={item.foodItem.image}
+                            alt={item.foodItem.name}
+                            fill
+                            sizes="56px"
+                            className="object-cover"
+                          />
                         </div>
 
-                        <button
-                          onClick={() => handleRemoveItem(item.foodItem.id)}
-                          className="text-[10px] font-semibold text-charcoal-light hover:text-imperial-red"
-                        >
-                          Remove
-                        </button>
+                        {/* Detail metadata */}
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-serif text-sm font-bold text-charcoal-dark truncate">
+                            {item.foodItem.name}
+                          </h4>
+                          <p className="text-[10px] text-imperial-red/80 font-serif font-semibold italic">
+                            {item.foodItem.chineseName}
+                          </p>
+                          <span className="text-xs text-charcoal-medium block mt-0.5">
+                            ¥{item.singlePrice.toFixed(2)} each
+                          </span>
+                        </div>
+
+                        {/* Increment / Decrement Quantity Action */}
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="flex items-center border border-charcoal-dark/10 rounded-full bg-chinese-offwhite/50 p-1">
+                            <button
+                              onClick={() => handleUpdateQuantity(item.cartId, -1)}
+                              className="w-5 h-5 rounded-full hover:bg-charcoal-dark/5 text-charcoal-medium flex items-center justify-center font-bold text-xs"
+                            >
+                              -
+                            </button>
+                            <span className="w-6 text-center text-xs font-bold text-charcoal-dark">
+                              {item.quantity}
+                            </span>
+                            <button
+                              onClick={() => handleUpdateQuantity(item.cartId, 1)}
+                              className="w-5 h-5 rounded-full hover:bg-charcoal-dark/5 text-charcoal-medium flex items-center justify-center font-bold text-xs"
+                            >
+                              +
+                            </button>
+                          </div>
+
+                          <button
+                            onClick={() => handleRemoveItem(item.cartId)}
+                            className="text-[10px] font-semibold text-charcoal-light hover:text-imperial-red"
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </div>
+
+                      {/* Display Custom Options (Spice Level, Add-ons) */}
+                      {(item.options.spiceLevel !== "Mild" || item.options.addOns.length > 0) && (
+                        <div className="bg-chinese-offwhite rounded-lg p-2 text-[10px] text-charcoal-medium space-y-0.5 border border-charcoal-dark/5 ml-18">
+                          {item.options.spiceLevel !== "Mild" && (
+                            <div>
+                              <span className="font-bold">Spice:</span> {item.options.spiceLevel}
+                            </div>
+                          )}
+                          {item.options.addOns.length > 0 && (
+                            <div>
+                              <span className="font-bold">Add-ons:</span> {item.options.addOns.join(", ")}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                     </div>
                   ))
@@ -629,7 +684,7 @@ export default function Home() {
                     </svg>
                     <h4 className="font-serif font-semibold text-charcoal-dark">购物车还是空的</h4>
                     <p className="text-xs max-w-[200px] mx-auto leading-relaxed">
-                      Your order list is empty. Tap the (+) button on any food card to add dishes!
+                      Your order list is empty. Tap any item to customize and add to your cart!
                     </p>
                   </div>
                 )}
@@ -674,6 +729,14 @@ export default function Home() {
 
         </div>
       )}
+
+      {/* Detailed Customizer Modal */}
+      <FoodDetailModal
+        item={activeDetailItem}
+        isOpen={!!activeDetailItem}
+        onClose={() => setActiveDetailItem(null)}
+        onAddToCart={handleAddToCartFromModal}
+      />
 
       {/* Footer */}
       <footer className="bg-charcoal-dark text-chinese-offwhite/70 py-12 px-6 border-t-4 border-imperial-red mt-20 z-10 relative">
